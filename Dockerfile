@@ -1,5 +1,5 @@
 # Dockerfile for running the CFIP Web Configurator itself
-FROM node:18-alpine AS builder
+FROM node:18-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -9,7 +9,7 @@ RUN npm config set registry https://registry.npmmirror.com && npm install
 COPY . .
 RUN npm run build
 
-FROM node:18-alpine
+FROM node:18-slim
 WORKDIR /app
 
 ENV NODE_ENV=production
