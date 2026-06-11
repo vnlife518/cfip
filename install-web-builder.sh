@@ -18,6 +18,10 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# 设置全局纯非交互模式环境变量，防止 grub、needrestart 等包更新时弹窗暂停等待用户确认
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 # 2. 自动安装 Docker 与必要依赖
 echo -e "${YELLOW}[1/4] 正在检测并安装系统依赖 (Docker/Git)...${CLEAR}"
 
@@ -45,7 +49,7 @@ if ! command -v git &> /dev/null; then
   echo -e "系统未发现 Git，开始部署 Git 安装..."
   if command -v apt-get &> /dev/null; then
     wait_for_apt_lock
-    apt-get update && apt-get install -y git
+    apt-get update -y && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" git
   elif command -v yum &> /dev/null; then
     yum install -y git
   else
@@ -61,14 +65,20 @@ if ! command -v git &> /dev/null; then
 fi
 
 if ! command -v docker &> /dev/null; then
-  echo -e "系统未检测到 Docker，开始自动安装官方 Docker 引擎..."
+  echo -e "${CYAN}--------------------------------------------------${CLEAR}"
+  echo -e "${YELLOW}💡 提示: 下一步将开始下载并配置官方 Docker 核心组件 (预计耗时 1-3 分钟)。${CLEAR}"
+  echo -e "${YELLOW}在部分 Linux（例如 Ubuntu）中，可能因系统软件包或 SSH 终端输出缓冲引发等待。${CLEAR}"
+  echo -e "${GREEN}👉 期间如果界面停滞超过 30 秒无任何变化，您可以随时点按 [ 回车键 (Enter) ] 激活刷新！${CLEAR}"
+  echo -e "${CYAN}--------------------------------------------------${CLEAR}"
+  sleep 4
+
   wait_for_apt_lock
-  curl -fsSL https://get.docker.com | bash
+  curl -fsSL https://get.docker.com | env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a bash
   
   if ! command -v docker &> /dev/null; then
     echo -e "${RED}❌ 官方 Docker 引擎自动下载失败。正在尝试辅助备用源安装...${CLEAR}"
     if command -v apt-get &> /dev/null; then
-      apt-get update && apt-get install -y docker.io
+      apt-get update -y && apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" docker.io
     elif command -v yum &> /dev/null; then
       yum install -y docker
     fi
