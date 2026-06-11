@@ -21,24 +21,68 @@ fi
 # 2. 自动安装 Docker 与必要依赖
 echo -e "${YELLOW}[1/4] 正在检测并安装系统依赖 (Docker/Git)...${CLEAR}"
 
+# 等待 APT 锁释放的鲁棒工具函数
+wait_for_apt_lock() {
+  echo -e "${YELLOW}正在智能排查并等待 APT 进程锁释放 (防锁死)...${CLEAR}"
+  local count=0
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 || pgrep dkg &>/dev/null || pgrep apt-get &>/dev/null; do
+    count=$((count+1))
+    if [ $count -gt 36 ]; then
+      echo -e "${RED}⚠️ APT 锁定已超时 (3分钟)。正在强制断开锁以便继续部署...${CLEAR}"
+      rm -f /var/lib/dpkg/lock-frontend
+      rm -f /var/lib/apt/lists/lock
+      rm -f /var/lib/dpkg/lock
+      dpkg --configure -a || true
+      break
+    fi
+    echo -e "${YELLOW}APT 安装锁目前被系统后台占满 (可能是云厂商默认在处理开机自动更新 / apt-get)，已等待 ${count}0 秒，继续监控中...${CLEAR}"
+    sleep 10
+  done
+  echo -e "${GREEN}✔ APT 锁定排查完成，开始进行关键下载部署。${CLEAR}"
+}
+
 if ! command -v git &> /dev/null; then
-  echo -e "正在安装 Git..."
+  echo -e "系统未发现 Git，开始部署 Git 安装..."
   if command -v apt-get &> /dev/null; then
+    wait_for_apt_lock
     apt-get update && apt-get install -y git
   elif command -v yum &> /dev/null; then
     yum install -y git
   else
-    echo -e "${RED}不支持的包管理器，请手动安装 git 后重试${CLEAR}"
+    echo -e "${RED}❌ 无法识别的 Linux 平台包管理器，请您手动在 VPS 安装 git 命令后重试此一键脚本。${CLEAR}"
     exit 1
   fi
 fi
 
+# 再次验证 git
+if ! command -v git &> /dev/null; then
+  echo -e "${RED}❌ Git 安装异常失败，请更换源或者重启 VPS 后重试！${CLEAR}"
+  exit 1
+fi
+
 if ! command -v docker &> /dev/null; then
   echo -e "系统未检测到 Docker，开始自动安装官方 Docker 引擎..."
+  wait_for_apt_lock
   curl -fsSL https://get.docker.com | bash
-  systemctl start docker
-  systemctl enable docker
+  
+  if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ 官方 Docker 引擎自动下载失败。正在尝试辅助备用源安装...${CLEAR}"
+    if command -v apt-get &> /dev/null; then
+      apt-get update && apt-get install -y docker.io
+    elif command -v yum &> /dev/null; then
+      yum install -y docker
+    fi
+  fi
 fi
+
+# 再次检测 Docker 状态
+if ! command -v docker &> /dev/null; then
+  echo -e "${RED}❌ Docker 引擎多次尝试自动安装均以失败告终！请先手动安装 Docker (例如: apt install docker.io) 后再试。${CLEAR}"
+  exit 1
+fi
+
+systemctl start docker || true
+systemctl enable docker || true
 
 echo -e "${GREEN}✔ 依赖基础环境检测成功！${CLEAR}"
 
@@ -48,10 +92,15 @@ DEPLOY_DIR="/opt/cfip-builder"
 
 if [ -d "$DEPLOY_DIR" ]; then
   echo "发现已有部署目录，执行增量代码拉取..."
-  cd "$DEPLOY_DIR" && git fetch --all && git reset --hard origin/main
+  cd "$DEPLOY_DIR"
+  git fetch --all && git reset --hard origin/main
 else
   echo "开始克隆 CFIP 项目代码到 /opt/cfip-builder..."
   git clone https://github.com/vnlife518/cfip.git "$DEPLOY_DIR"
+  if [ ! -d "$DEPLOY_DIR" ]; then
+    echo -e "${RED}❌ 克隆 GitHub 代码仓库失败！请检查您的 VPS 的网络是否能够正常访问 github.com。${CLEAR}"
+    exit 1
+  fi
   cd "$DEPLOY_DIR"
 fi
 
@@ -62,11 +111,21 @@ docker rm cfip-builder &> /dev/null || true
 
 # 编译并运行
 docker build -t cfip-builder .
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ Docker 镜像编译构建失败，请检查 Dockerfile 文件或系统内存剩余。${CLEAR}"
+  exit 1
+fi
+
 docker run -d \
   --name cfip-builder \
   --restart always \
   -p 3000:3000 \
   cfip-builder
+
+if [ $? -ne 0 ]; then
+  echo -e "${RED}❌ 网页容器启动异常失败！错误原因一般为 3000 端口已被其他服务占用。${CLEAR}"
+  exit 1
+fi
 
 echo -e "${GREEN}✔ 网页服务器编译打包并在后台启动成功！${CLEAR}"
 
