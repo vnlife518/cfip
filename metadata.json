@@ -1,0 +1,6 @@
+{
+  "name": "Cloudflare Multi-Proxy VPS Builder",
+  "description": "Generate light-weight docker-compose and one-click shell installers for your VPS to route multiple independent Cloudflare outbound IPs on custom SOCKS5 ports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
