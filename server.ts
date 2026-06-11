@@ -53,26 +53,39 @@ function buildDockerCompose(params: {
     if (warpKey) {
       envVars += `      - WARP_LICENSE_KEY=${warpKey}\n`;
     }
-    if (socksUser && socksPass) {
-      envVars += `      - SOCKS5_USER=${socksUser}\n`;
-      envVars += `      - SOCKS5_PASS=${socksPass}\n`;
-    }
     if (customEndpoint) {
       envVars += `      - WARP_ENDPOINT=${customEndpoint}\n`;
     }
 
+    // Always create the unauthenticated local warp tunnel first
     services += `  warp-socks-${i}:
     image: caomingjun/warp-socks:latest
     container_name: cf-warp-socks-${i}
     restart: always
-    ports:
-      - "${port}:1080"
     volumes:
       - cf-warp-vol-${i}:/var/lib/cloudflare-warp
 `;
-
     if (envVars) {
       services += `    environment:\n${envVars}`;
+    }
+
+    // If username and password auth is configured, use a sidecar gost container as authenticator
+    if (socksUser && socksPass) {
+      services += `  auth-socks-${i}:
+    image: ginuerzh/gost:latest
+    container_name: cf-auth-socks-${i}
+    restart: always
+    ports:
+      - "${port}:1080"
+    command: -L=socks5://${socksUser}:${socksPass}@:1080 -F=socks5://warp-socks-${i}:1080
+    depends_on:
+      - warp-socks-${i}
+`;
+    } else {
+      // If unauthenticated, expose the warp container port directly
+      services += `    ports:
+      - "${port}:1080"
+`;
     }
   }
 
@@ -129,24 +142,27 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 2. Check and Install Docker & Docker Compose
-echo -e "\${YELLOW}[1/4] 检查系统 Docker 依赖环境...\${CLEAR}"
+echo -e "\${YELLOW}[1/4] 检测并安装 Docker、Docker-Compose 必备环境...\${CLEAR}"
 if ! command -v docker &> /dev/null; then
-  echo -e "未检测到 Docker，正在自动安装..."
-  apt-get update -y
-  apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-  apt-get update -y
-  apt-get install -y docker-ce docker-ce-cli containerd.io
+  echo -e "系统未检测到 Docker，正在拉取官方通用脚本自动配置安装..."
+  curl -fsSL https://get.docker.com | bash
+  systemctl start docker || true
+  systemctl enable docker || true
 fi
 
+# Ensure docker-compose command tool or plugin behaves as expected
 if ! docker compose version &> /dev/null; then
-  echo -e "未检测到 Docker Compose v2, 正在自动安装 Docker Compose 插件..."
-  apt-get update -y
-  apt-get install -y docker-compose-plugin
+  echo -e "尝试安装 Docker Compose v2 插件..."
+  if command -v apt-get &> /dev/null; then
+    apt-get update -y && apt-get install -y docker-compose-plugin
+  elif command -v yum &> /dev/null; then
+    yum install -y docker-compose-plugin
+  else
+    echo -e "\${YELLOW}警告: 推荐手动安装 docker-compose 或 docker compose 插件以获得最佳调度方案！\${CLEAR}"
+  fi
 fi
 
-echo -e "\${GREEN}Docker 及 Docker Compose 环境已准备就绪！\${CLEAR}"
+echo -e "\${GREEN}Docker 系统运行配置已就绪！\${CLEAR}"
 
 # 3. Create CFIP Deployment Directory
 echo -e "\${YELLOW}[2/4] 创建并配置 CFIP 项目根目录 [/root/CFIP]...\${CLEAR}"
